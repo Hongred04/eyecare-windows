@@ -1,18 +1,9 @@
 # 运行时产物
 log/
 _selftest/
+cli-last.txt
 selftest-report.txt
 report.txt
-cli-last.txt
-icon-check.png
-icon-big.png
-icon-preview.png
 
-# 构建中间物
+# 编译产物（用 build.bat 重新生成）
 *.exe
-icongen*.exe
-probe.*
-
-# 系统垃圾
-Thumbs.db
-.DS_Store

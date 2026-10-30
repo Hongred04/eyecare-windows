@@ -945,13 +945,118 @@ namespace EyeCare
     }
 
     // ---------------------------------------------------------------- 5. 遮罩界面（多屏覆盖 + 居中卡片）
+    // 界面小工具：取色混合 / 圆角路径 / 淡入动画
+    static class UiFx
+    {
+        public static Color Mix(Color a, Color b, double t)
+        {
+            if (t < 0) t = 0; if (t > 1) t = 1;
+            return Color.FromArgb(
+                (int)Math.Round(a.A + (b.A - a.A) * t),
+                (int)Math.Round(a.R + (b.R - a.R) * t),
+                (int)Math.Round(a.G + (b.G - a.G) * t),
+                (int)Math.Round(a.B + (b.B - a.B) * t));
+        }
+
+        public static Color Lighten(Color c, double t) { return Mix(c, Color.White, t); }
+        public static Color Darken(Color c, double t) { return Mix(c, Color.Black, t); }
+
+        public static GraphicsPath RoundRect(RectangleF r, float radius)
+        {
+            GraphicsPath p = new GraphicsPath();
+            if (r.Width <= 0 || r.Height <= 0) return p;
+            if (radius < 0.5f) { p.AddRectangle(r); return p; }
+            if (radius > r.Width / 2f) radius = r.Width / 2f;
+            if (radius > r.Height / 2f) radius = r.Height / 2f;
+            float d = radius * 2f;
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        // 淡入：透明度从 0 平滑升到 target，结束后自动释放计时器
+        public static void FadeIn(Form f, double target, int ms)
+        {
+            try
+            {
+                if (f == null || f.IsDisposed) return;
+                if (target < 0) target = 0; if (target > 1) target = 1;
+                if (ms <= 0) { f.Opacity = target; return; }
+                f.Opacity = 0;
+                Timer t = new Timer();
+                t.Interval = 16;
+                DateTime start = DateTime.Now;
+                t.Tick += delegate
+                {
+                    if (f.IsDisposed) { t.Stop(); t.Dispose(); return; }
+                    double p = (DateTime.Now - start).TotalMilliseconds / ms;
+                    if (p >= 1.0) { f.Opacity = target; t.Stop(); t.Dispose(); return; }
+                    f.Opacity = target * p;
+                };
+                t.Start();
+            }
+            catch { }
+        }
+    }
+
+    // 圆角扁平按钮：自绘悬停/按下态，替代系统按钮的生硬描边
+    sealed class CardButton : Control
+    {
+        readonly Color fill, hover, down, border;
+        bool mouseOver, mouseDown;
+
+        public CardButton(Color cardColor)
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            fill = UiFx.Lighten(cardColor, 0.13);
+            hover = UiFx.Lighten(cardColor, 0.22);
+            down = UiFx.Darken(cardColor, 0.10);
+            border = Color.FromArgb(48, 255, 255, 255);
+            BackColor = cardColor;
+            ForeColor = Color.White;
+            Cursor = Cursors.Hand;
+            TabStop = false;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); mouseOver = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); mouseOver = false; mouseDown = false; Invalidate(); }
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); mouseDown = true; Invalidate(); }
+        protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); mouseDown = false; Invalidate(); }
+        protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            if (r.Width > 2 && r.Height > 2)
+            {
+                using (GraphicsPath p = UiFx.RoundRect(r, Height / 3.2f))
+                {
+                    Color c = mouseDown ? down : (mouseOver ? hover : fill);
+                    using (SolidBrush br = new SolidBrush(c)) g.FillPath(br, p);
+                    using (Pen pe = new Pen(border)) g.DrawPath(pe, p);
+                }
+            }
+            Color fc = Enabled ? ForeColor : Color.FromArgb(140, ForeColor);
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(0, 0, Width, Height), fc,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
+    }
+
     sealed class Backdrop : Form
     {
         public bool HoldTopmost;
+        readonly Color baseColor;
 
         public Backdrop(Rectangle bounds, Color color, double opacity, bool holdTopmost, bool fullScreen)
         {
             HoldTopmost = holdTopmost;
+            baseColor = color;
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
@@ -959,6 +1064,7 @@ namespace EyeCare
             MaximizeBox = false;
             TopMost = true;
             BackColor = color;
+            DoubleBuffered = true;
             Opacity = opacity;
             if (fullScreen) Bounds = bounds;
             else
@@ -966,6 +1072,18 @@ namespace EyeCare
                 Rectangle wa = Rectangle.Empty;
                 foreach (Screen s in Screen.AllScreens) if (s.Bounds == bounds) { wa = s.WorkingArea; break; }
                 Bounds = wa == Rectangle.Empty ? bounds : wa;
+            }
+        }
+
+        // 纵向轻渐变，避免整片死平
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Rectangle r = ClientRectangle;
+            if (r.Width <= 0 || r.Height <= 0) { base.OnPaintBackground(e); return; }
+            using (LinearGradientBrush br = new LinearGradientBrush(r,
+                UiFx.Lighten(baseColor, 0.03), UiFx.Darken(baseColor, 0.22), LinearGradientMode.Vertical))
+            {
+                e.Graphics.FillRectangle(br, r);
             }
         }
 
@@ -990,13 +1108,17 @@ namespace EyeCare
         Label countdown = new Label();
         Label sub = new Label();
         Label hint = new Label();
-        Button btnPostpone = new Button();
-        Button btnSkip = new Button();
-        Panel bar = new Panel();
+        CardButton btnPostpone;
+        CardButton btnSkip;
         readonly double scale;
         readonly int cardW;
-        readonly int cardH;
-        int barMax;
+        int cardH;
+        readonly Color cardColor, accent, trackColor, urgentColor;
+        RectangleF ringRect;   // 倒计时圆环（已按 DPI 换算）
+        RectangleF tipRect;    // 护眼建议框（无建议时为空）
+        double remFrac = 1.0;  // 剩余比例，驱动圆环
+        bool urgent;           // 最后 10 秒转琥珀色
+
         public Action OnPostpone = delegate { };
         public Action OnSkip = delegate { };
 
@@ -1008,72 +1130,115 @@ namespace EyeCare
             ShowInTaskbar = false;
             TopMost = true;
             KeyPreview = true;
-            BackColor = cfg.CardColor;
+            DoubleBuffered = true;
             AutoScaleMode = AutoScaleMode.None;
             Font = F(cfg.font_size, false);
 
-            cardW = S(470);
-            cardH = S(cfg.show_tip ? 306 : 244);
-            ClientSize = new Size(cardW, cardH);
+            cardColor = cfg.CardColor;
+            accent = cfg.AccentColor;
+            trackColor = UiFx.Lighten(cardColor, 0.10);
+            urgentColor = Color.FromArgb(246, 173, 85);
+            BackColor = cardColor;
 
-            title.SetBounds(S(26), S(16), cardW - S(52), S(34));
+            cardW = S(480);
+
+            // —— 布局：标题 → 圆环倒计时 → 状态行 → 建议框 → 按钮
+            title.SetBounds(S(20), S(20), cardW - S(40), S(32));
             title.ForeColor = Color.White;
-            title.Font = F(cfg.font_size + 3, true);
+            title.Font = F(cfg.font_size + 2, true);
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.BackColor = cardColor;
             title.Text = TitleFor(kind);
 
-            countdown.SetBounds(S(26), S(54), cardW - S(52), S(66));
-            countdown.Font = F(cfg.font_size + 26, true);
-            countdown.ForeColor = cfg.AccentColor;
+            // 圆环直径按倒计时实际宽度自适应，避免大字号溢出
+            Font cdFont = F(cfg.font_size + 20, true);
+            int cdW = TextRenderer.MeasureText("00:00", cdFont).Width;
+            int ringD = Math.Max(S(172), cdW + S(48));
+            int ringX = (cardW - ringD) / 2;
+            int ringY = S(64);
+            ringRect = new RectangleF(ringX + S(6), ringY + S(6), ringD - S(12) - 1, ringD - S(12) - 1);
+
+            countdown.SetBounds(ringX + S(18), ringY + (ringD - S(66)) / 2, ringD - S(36), S(66));
+            countdown.Font = cdFont;
+            countdown.ForeColor = accent;
             countdown.TextAlign = ContentAlignment.MiddleCenter;
+            countdown.BackColor = cardColor;
             countdown.Text = "00:00";
 
-            bar.SetBounds(S(26), S(128), cardW - S(52), S(6));
-            bar.BackColor = cfg.AccentColor;
-            barMax = cardW - S(52);
-
-            sub.SetBounds(S(26), S(142), cardW - S(52), S(38));
+            int subY = ringY + ringD + S(12);
+            sub.SetBounds(S(24), subY, cardW - S(48), S(26));
             sub.ForeColor = Color.FromArgb(214, 228, 242);
-            sub.Font = F(Math.Max(14, cfg.font_size - 6), false);
+            sub.Font = F(Math.Max(14, cfg.font_size - 8), false);
+            sub.TextAlign = ContentAlignment.MiddleCenter;
+            sub.BackColor = cardColor;
 
-            hint.SetBounds(S(26), S(184), cardW - S(52), S(cfg.show_tip ? 58 : 8));
-            hint.ForeColor = Color.FromArgb(172, 192, 212);
-            hint.Font = F(Math.Max(14, cfg.font_size - 8), false);
-            hint.Text = cfg.show_tip ? TipFor(kind) : "";
+            int btnY;
+            if (cfg.show_tip)
+            {
+                int tipY = subY + S(30);
+                int tipH = S(72);
+                tipRect = new RectangleF(S(30), tipY, cardW - S(60), tipH);
+                Color tipFill = UiFx.Lighten(cardColor, 0.055);
+                hint.SetBounds(S(30) + S(24), tipY + S(6), cardW - S(60) - S(24) - S(14), tipH - S(12));
+                hint.ForeColor = Color.FromArgb(186, 202, 220);
+                hint.Font = F(Math.Max(14, cfg.font_size - 10), false);
+                hint.TextAlign = ContentAlignment.MiddleLeft;
+                hint.BackColor = tipFill;
+                hint.Text = TipFor(kind);
+                btnY = tipY + tipH + S(14);
+            }
+            else
+            {
+                tipRect = RectangleF.Empty;
+                hint.Visible = false;
+                btnY = subY + S(44);
+            }
 
-            btnPostpone.SetBounds(S(26), cardH - S(58), S(192), S(38));
-            btnPostpone.Text = kind == Engine.K_DAILY ? "延后 10 分钟" : "延后一会儿";
-            Style(btnPostpone, cfg);
+            int btnH = S(42);
+            cardH = btnY + btnH + S(18);
+            ClientSize = new Size(cardW, cardH);
+            ApplyRoundedRegion();
+
+            btnPostpone = new CardButton(cardColor);
+            btnPostpone.Font = F(Math.Max(14, cfg.font_size - 8), false);
+            btnPostpone.Text = kind == Engine.K_DAILY ? "延后 10 分钟" : "延后 " + Config.N(cfg.postpone_min) + " 分钟";
+            int btnW = kind == Engine.K_DAILY ? cardW - S(60) : (cardW - S(60) - S(16)) / 2;
+            btnPostpone.SetBounds(S(30), btnY, btnW, btnH);
             btnPostpone.Click += delegate { OnPostpone(); };
+            Controls.Add(btnPostpone);
 
-            btnSkip.SetBounds(cardW - S(218), cardH - S(58), S(192), S(38));
-            btnSkip.Text = "跳过本次休息";
-            Style(btnSkip, cfg);
-            btnSkip.Click += delegate { OnSkip(); };
-            btnSkip.Visible = kind != Engine.K_DAILY;
+            if (kind != Engine.K_DAILY)
+            {
+                btnSkip = new CardButton(cardColor);
+                btnSkip.Font = F(Math.Max(14, cfg.font_size - 8), false);
+                btnSkip.Text = "跳过本次休息";
+                btnSkip.SetBounds(cardW - S(30) - btnW, btnY, btnW, btnH);
+                btnSkip.Click += delegate { OnSkip(); };
+                Controls.Add(btnSkip);
+            }
 
             Controls.Add(title);
             Controls.Add(countdown);
-            Controls.Add(bar);
             Controls.Add(sub);
             Controls.Add(hint);
-            Controls.Add(btnPostpone);
-            Controls.Add(btnSkip);
         }
 
-        void Style(Button b, Config cfg)
+        void ApplyRoundedRegion()
         {
-            b.FlatStyle = FlatStyle.Flat;
-            b.FlatAppearance.BorderColor = Color.FromArgb(96, 200, 232, 255);
-            b.BackColor = Color.FromArgb(38, 70, 110);
-            b.ForeColor = Color.White;
-            b.Font = F(Math.Max(14, cfg.font_size - 8), false);
-            b.TabStop = true;
+            using (GraphicsPath p = UiFx.RoundRect(new RectangleF(0, 0, Width, Height), S(18)))
+                Region = new Region(p);
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            ApplyRoundedRegion();
         }
 
         Font F(int px, bool bold)
         {
             FontStyle st = bold ? FontStyle.Bold : FontStyle.Regular;
-            return new Font("Microsoft YaHei UI", (float)(px * scale), GraphicsUnit.Pixel);
+            return new Font("Microsoft YaHei UI", (float)(px * scale), st, GraphicsUnit.Pixel);
         }
 
         int S(int v) { return (int)Math.Round(v * scale); }
@@ -1095,12 +1260,66 @@ namespace EyeCare
         public void SetCountdown(double remaining, double total, string status)
         {
             if (IsDisposed) return;
-            countdown.Text = Engine.Cms(remaining);
-            sub.Text = status;
-            int w = total <= 0 ? 0 : (int)Math.Round(barMax * (1.0 - remaining / total));
-            if (w < 0) w = 0;
-            if (w > barMax) w = barMax;
-            bar.Width = w;
+            string cd = Engine.Cms(remaining);
+            countdown.Text = cd;
+            urgent = total > 0 && remaining > 0 && remaining <= 10.0;
+            countdown.ForeColor = urgent ? urgentColor : accent;
+            remFrac = total <= 0 ? 0 : Math.Max(0, Math.Min(1, remaining / total));
+            sub.Text = TrimDup(status, cd);
+            Invalidate();
+        }
+
+        // 引擎状态文本末尾的 mm:ss 与大倒计时重复，去掉（如「小休中 01:23」→「小休中」）
+        static string TrimDup(string status, string cd)
+        {
+            string s = (status ?? "").Trim();
+            if (s.EndsWith(cd, StringComparison.Ordinal))
+                s = s.Substring(0, s.Length - cd.Length).TrimEnd();
+            if (s.EndsWith(":", StringComparison.Ordinal) || s.EndsWith("\uFF1A", StringComparison.Ordinal))
+                s = s.TrimEnd(':', '\uFF1A');
+            return s.Length == 0 ? "休息中" : s;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            // 进度环：满圈轨道 + 高亮剩余弧，最后 10 秒转琥珀色
+            float stroke = S(11);
+            using (Pen p = new Pen(trackColor, stroke))
+            {
+                p.StartCap = LineCap.Round;
+                p.EndCap = LineCap.Round;
+                g.DrawArc(p, ringRect, -89.999f, 359.999f);
+            }
+            if (remFrac > 0.001)
+            {
+                using (Pen p = new Pen(urgent ? urgentColor : accent, stroke))
+                {
+                    p.StartCap = LineCap.Round;
+                    p.EndCap = LineCap.Round;
+                    g.DrawArc(p, ringRect, -90f, (float)(360.0 * remFrac));
+                }
+            }
+
+            // 护眼建议框：浅一档的圆角底 + 主题色竖条
+            if (tipRect.Width > 0)
+            {
+                using (GraphicsPath tp = UiFx.RoundRect(tipRect, S(10)))
+                using (SolidBrush br = new SolidBrush(UiFx.Lighten(cardColor, 0.055)))
+                    g.FillPath(br, tp);
+                RectangleF bar = new RectangleF(tipRect.X + S(10), tipRect.Y + S(12), S(4), tipRect.Height - S(24));
+                using (GraphicsPath bp = UiFx.RoundRect(bar, S(2)))
+                using (SolidBrush br = new SolidBrush(accent))
+                    g.FillPath(br, bp);
+            }
+
+            // 卡片 1px 描边，压住圆角锯齿
+            using (GraphicsPath cp = UiFx.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), S(18)))
+            using (Pen pe = new Pen(Color.FromArgb(24, 255, 255, 255)))
+                g.DrawPath(pe, cp);
         }
 
         protected override void OnKeyDown(KeyEventArgs e)
@@ -1109,7 +1328,7 @@ namespace EyeCare
             if (e.KeyCode == Keys.Escape)
             {
                 e.Handled = true;
-                if (btnSkip.Visible) OnSkip(); else OnPostpone();
+                if (btnSkip != null) OnSkip(); else OnPostpone();
             }
         }
     }
@@ -1134,6 +1353,7 @@ namespace EyeCare
             foreach (Screen s in Screen.AllScreens)
             {
                 Backdrop b = new Backdrop(s.Bounds, back, opacity, cfg.keep_topmost, cfg.cover_taskbar);
+                UiFx.FadeIn(b, opacity, 240);
                 b.Show();
                 backdrops.Add(b);
             }
@@ -1143,6 +1363,7 @@ namespace EyeCare
             Rectangle wa = CursorScreen().WorkingArea;
             card.Location = new Point(wa.Left + (wa.Width - card.Width) / 2,
                                       Math.Max(wa.Top + 8, wa.Top + (wa.Height - card.Height) / 2 - S(20)));
+            UiFx.FadeIn(card, 1.0, 200);
             card.Show();
             card.Activate();
             card.Focus();

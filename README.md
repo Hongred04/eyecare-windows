@@ -1,22 +1,5 @@
 # EyeCare —— 电脑使用时长护眼提醒
 
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
-![Runtime](https://img.shields.io/badge/.NET-Framework%204.8-5C2D91)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Size](https://img.shields.io/badge/exe-~140%20KB-success)
-
-Windows 桌面小工具：**可循环**提醒休息、**参数随时可改**、**可开机自启动**，
-另带**每日累计用机上限**与**闲置自动暂停**（人不在电脑前不会白计时）。
-
-零依赖：只用 Windows 自带的 .NET Framework 4.8 编译器，产物是单个
-`EyeCare.exe`（约 140 KB），不需要安装 Python / Node / SDK，也不需要管理员权限。
-
-## 下载
-
-到 [Releases](../../releases) 页下载 `EyeCare.exe`（单文件，双击即用），
-或 `git clone` 本仓库后按下一节自行编译 —— 都不需要联网安装任何东西。
-
-## 自己编译
 Windows 桌面小工具：**可循环**提醒休息、**参数随时可改**、**可开机自启动**，
 另带**每日累计用机上限**与**闲置自动暂停**（人不在电脑前不会白计时）。
 
@@ -61,7 +44,8 @@ Windows 桌面小工具：**可循环**提醒休息、**参数随时可改**、*
 计时冻结、遮罩自动收起，回来后继续。锁屏、注销、睡眠也会立刻收掉遮罩。
 
 **遮罩行为**：所有显示器一起盖住（`cover_taskbar=true` 可连任务栏一起遮），
-居中卡片显示倒计时、进度条与护眼建议。两个出口：
+居中圆角卡片显示**圆环倒计时**（环随剩余时间泄掉，最后 10 秒转琥珀色）、
+状态行与护眼建议，出现时约 0.2 秒淡入。两个出口：
 
 | 按钮 | 作用 |
 |---|---|
